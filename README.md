@@ -2,7 +2,11 @@
 
 [![Tests](https://github.com/philiprehberger/py-state-machine/actions/workflows/publish.yml/badge.svg)](https://github.com/philiprehberger/py-state-machine/actions/workflows/publish.yml)
 [![PyPI version](https://img.shields.io/pypi/v/philiprehberger-state-machine.svg)](https://pypi.org/project/philiprehberger-state-machine/)
+[![GitHub release](https://img.shields.io/github/v/release/philiprehberger/py-state-machine)](https://github.com/philiprehberger/py-state-machine/releases)
+[![Last updated](https://img.shields.io/github/last-commit/philiprehberger/py-state-machine)](https://github.com/philiprehberger/py-state-machine/commits/main)
 [![License](https://img.shields.io/github/license/philiprehberger/py-state-machine)](LICENSE)
+[![Bug Reports](https://img.shields.io/github/issues/philiprehberger/py-state-machine/bug)](https://github.com/philiprehberger/py-state-machine/issues?q=is%3Aissue+is%3Aopen+label%3Abug)
+[![Feature Requests](https://img.shields.io/github/issues/philiprehberger/py-state-machine/enhancement)](https://github.com/philiprehberger/py-state-machine/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
 [![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ec6cb9)](https://github.com/sponsors/philiprehberger)
 
 Lightweight finite state machine with guards and callbacks.
@@ -72,6 +76,35 @@ sm.trigger("confirm")
 # Entered confirmed via confirm
 ```
 
+### Guard Conditions
+
+Guards are optional callables that receive a context dict and must return `True` to allow the transition. If a guard returns falsy, `InvalidTransitionError` is raised.
+
+```python
+from philiprehberger_state_machine import StateMachine
+
+sm = StateMachine(
+    states=["draft", "published"],
+    initial="draft",
+    transitions=[],
+)
+
+sm.add_transition("draft", "published", "publish", guard=lambda ctx: ctx.get("has_title", False))
+
+sm.trigger("publish", context={"has_title": True})   # succeeds
+print(sm.state)  # "published"
+```
+
+### Transition Context
+
+Pass a context dict to `trigger()` to share data with guards and callbacks.
+
+```python
+sm.trigger("confirm", context={"user": "alice", "approved": True})
+```
+
+If no context is provided, an empty dict is passed to guards.
+
 ### History and Reset
 
 ```python
@@ -102,8 +135,9 @@ print(sm.history)  # []
 | `StateMachine(states, initial, transitions)` | Create a state machine with given states, initial state, and transitions |
 | `StateMachine.state` | Current state (read-only property) |
 | `StateMachine.history` | List of past states (read-only property) |
-| `StateMachine.trigger(event)` | Execute a transition or raise `InvalidTransitionError` |
+| `StateMachine.trigger(event, context=None)` | Execute a transition or raise `InvalidTransitionError`. Pass optional context dict to guards. |
 | `StateMachine.can(event)` | Return whether the event is valid from the current state |
+| `StateMachine.add_transition(from_state, to_state, event, guard=None)` | Add a transition with an optional guard callable |
 | `StateMachine.on_enter(state, callback)` | Register a callback for entering a state |
 | `StateMachine.on_exit(state, callback)` | Register a callback for exiting a state |
 | `StateMachine.reset()` | Reset to initial state and clear history |
@@ -116,6 +150,13 @@ pip install -e .
 python -m pytest tests/ -v
 ```
 
+## Support
+
+If you find this package useful, consider giving it a star on GitHub — it helps motivate continued maintenance and development.
+
+[![LinkedIn](https://img.shields.io/badge/Philip%20Rehberger-LinkedIn-0A66C2?logo=linkedin)](https://www.linkedin.com/in/philiprehberger)
+[![More packages](https://img.shields.io/badge/more-open%20source%20packages-blue)](https://philiprehberger.com/open-source-packages)
+
 ## License
 
-MIT
+[MIT](LICENSE)
