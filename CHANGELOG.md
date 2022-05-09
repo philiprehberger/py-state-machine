@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 (2026-03-28)
+
+- Add state machine visualization export (DOT and Mermaid formats)
+- Add timeout-based automatic transitions
+- Add snapshot/restore for state serialization
+- Bring package into full compliance with guides
+
 ## 0.2.0 (2026-03-27)
 
 - Add guard conditions to transitions via `add_transition()` with optional `guard` parameter
