@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
-from philiprehberger_state_machine import InvalidTransitionError, StateMachine
+from philiprehberger_state_machine import (
+    InvalidTransitionError,
+    StateMachine,
+    TransitionRecord,
+)
 
 
 def _make_order_machine() -> StateMachine:
@@ -89,6 +95,64 @@ class TestHistory:
         assert sm.history == ["pending"]
 
 
+class TestTransitionHistory:
+    def test_transition_history_starts_empty(self) -> None:
+        sm = _make_order_machine()
+        assert sm.transition_history == []
+
+    def test_transition_history_records_transitions(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm")
+        sm.trigger("ship")
+        records = sm.transition_history
+        assert len(records) == 2
+
+        assert records[0].from_state == "pending"
+        assert records[0].to_state == "confirmed"
+        assert records[0].event == "confirm"
+
+        assert records[1].from_state == "confirmed"
+        assert records[1].to_state == "shipped"
+        assert records[1].event == "ship"
+
+    def test_transition_history_has_timestamps(self) -> None:
+        sm = _make_order_machine()
+        before = time.time()
+        sm.trigger("confirm")
+        after = time.time()
+
+        records = sm.transition_history
+        assert len(records) == 1
+        assert before <= records[0].timestamp <= after
+
+    def test_transition_history_timestamps_are_monotonic(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm")
+        sm.trigger("ship")
+        records = sm.transition_history
+        assert records[0].timestamp <= records[1].timestamp
+
+    def test_transition_history_returns_copy(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm")
+        history = sm.transition_history
+        assert len(history) == 1
+        history.append(TransitionRecord("x", "y", "z", 0.0))
+        assert len(sm.transition_history) == 1
+
+    def test_transition_record_is_frozen(self) -> None:
+        record = TransitionRecord("a", "b", "go", 1234.0)
+        with pytest.raises(AttributeError):
+            record.from_state = "c"  # type: ignore[misc]
+
+    def test_transition_history_cleared_on_reset(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm")
+        assert len(sm.transition_history) == 1
+        sm.reset()
+        assert sm.transition_history == []
+
+
 class TestCallbacks:
     def test_on_enter_fires(self) -> None:
         sm = _make_order_machine()
@@ -112,6 +176,14 @@ class TestCallbacks:
         sm.trigger("confirm")
         assert calls == ["first", "second"]
 
+    def test_exit_fires_before_enter(self) -> None:
+        sm = _make_order_machine()
+        calls: list[str] = []
+        sm.on_exit("pending", lambda s, e: calls.append("exit"))
+        sm.on_enter("confirmed", lambda s, e: calls.append("enter"))
+        sm.trigger("confirm")
+        assert calls == ["exit", "enter"]
+
 
 class TestReset:
     def test_reset_restores_initial_state(self) -> None:
@@ -126,6 +198,12 @@ class TestReset:
         sm.trigger("confirm")
         sm.reset()
         assert sm.history == []
+
+    def test_reset_clears_transition_history(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm")
+        sm.reset()
+        assert sm.transition_history == []
 
 
 class TestGuards:
@@ -183,3 +261,241 @@ class TestContext:
         sm = _make_order_machine()
         sm.trigger("confirm")
         assert sm.state == "confirmed"
+
+
+class TestWildcardTransitions:
+    def test_wildcard_transition_from_any_state(self) -> None:
+        sm = StateMachine(
+            states=["idle", "running", "paused", "error"],
+            initial="idle",
+            transitions=[
+                ("idle", "running", "start"),
+                ("running", "paused", "pause"),
+                ("*", "error", "fail"),
+            ],
+        )
+        # Fail from idle
+        sm.trigger("fail")
+        assert sm.state == "error"
+
+    def test_wildcard_from_non_initial_state(self) -> None:
+        sm = StateMachine(
+            states=["idle", "running", "paused", "error"],
+            initial="idle",
+            transitions=[
+                ("idle", "running", "start"),
+                ("running", "paused", "pause"),
+                ("*", "error", "fail"),
+            ],
+        )
+        sm.trigger("start")
+        assert sm.state == "running"
+        sm.trigger("fail")
+        assert sm.state == "error"
+
+    def test_wildcard_can_returns_true(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "error"],
+            initial="a",
+            transitions=[
+                ("a", "b", "go"),
+                ("*", "error", "fail"),
+            ],
+        )
+        assert sm.can("fail") is True
+        sm.trigger("go")
+        assert sm.can("fail") is True
+
+    def test_wildcard_with_add_transition(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "reset_state"],
+            initial="a",
+            transitions=[("a", "b", "go")],
+        )
+        sm.add_transition("*", "reset_state", "emergency")
+        sm.trigger("go")
+        assert sm.state == "b"
+        sm.trigger("emergency")
+        assert sm.state == "reset_state"
+
+    def test_wildcard_records_actual_from_state(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "error"],
+            initial="a",
+            transitions=[
+                ("a", "b", "go"),
+                ("*", "error", "fail"),
+            ],
+        )
+        sm.trigger("go")
+        sm.trigger("fail")
+        records = sm.transition_history
+        assert records[1].from_state == "b"
+        assert records[1].to_state == "error"
+
+    def test_wildcard_fires_callbacks(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "error"],
+            initial="a",
+            transitions=[
+                ("a", "b", "go"),
+                ("*", "error", "fail"),
+            ],
+        )
+        calls: list[tuple[str, str]] = []
+        sm.on_exit("b", lambda s, e: calls.append(("exit", s)))
+        sm.on_enter("error", lambda s, e: calls.append(("enter", s)))
+        sm.trigger("go")
+        sm.trigger("fail")
+        assert calls == [("exit", "b"), ("enter", "error")]
+
+    def test_wildcard_with_guard(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "error"],
+            initial="a",
+            transitions=[("a", "b", "go")],
+        )
+        sm.add_transition("*", "error", "fail", guard=lambda ctx: ctx.get("critical", False))
+        sm.trigger("go")
+        with pytest.raises(InvalidTransitionError):
+            sm.trigger("fail", context={"critical": False})
+        assert sm.state == "b"
+        sm.trigger("fail", context={"critical": True})
+        assert sm.state == "error"
+
+    def test_exact_match_preferred_over_wildcard(self) -> None:
+        """Exact state match should be tried before wildcard."""
+        sm = StateMachine(
+            states=["a", "b", "c"],
+            initial="a",
+            transitions=[
+                ("a", "b", "go"),
+                ("*", "c", "go"),
+            ],
+        )
+        sm.trigger("go")
+        # Exact match (a -> b) should win over wildcard (* -> c)
+        assert sm.state == "b"
+
+    def test_exact_match_preferred_even_when_wildcard_first(self) -> None:
+        """Exact match wins regardless of definition order."""
+        sm = StateMachine(
+            states=["a", "b", "c"],
+            initial="a",
+            transitions=[
+                ("*", "c", "go"),
+                ("a", "b", "go"),
+            ],
+        )
+        sm.trigger("go")
+        assert sm.state == "b"
+
+    def test_wildcard_in_constructor_validation(self) -> None:
+        """Wildcard source should not fail validation."""
+        sm = StateMachine(
+            states=["a", "b"],
+            initial="a",
+            transitions=[("*", "b", "reset")],
+        )
+        sm.trigger("reset")
+        assert sm.state == "b"
+
+    def test_wildcard_in_dot_export(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "error"],
+            initial="a",
+            transitions=[
+                ("a", "b", "go"),
+                ("*", "error", "fail"),
+            ],
+        )
+        dot = sm.to_dot()
+        # Wildcard should expand to edges from all non-target states
+        assert '"a" -> "error" [label="fail"]' in dot
+        assert '"b" -> "error" [label="fail"]' in dot
+
+    def test_wildcard_in_mermaid_export(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "error"],
+            initial="a",
+            transitions=[
+                ("a", "b", "go"),
+                ("*", "error", "fail"),
+            ],
+        )
+        mermaid = sm.to_mermaid()
+        assert "a --> error : fail" in mermaid
+        assert "b --> error : fail" in mermaid
+
+
+class TestVisualization:
+    def test_to_dot_output(self) -> None:
+        sm = StateMachine(
+            states=["a", "b"],
+            initial="a",
+            transitions=[("a", "b", "go")],
+        )
+        dot = sm.to_dot()
+        assert "digraph StateMachine" in dot
+        assert '"a" [shape=doublecircle]' in dot
+        assert '"b" [shape=circle]' in dot
+        assert '"a" -> "b" [label="go"]' in dot
+
+    def test_to_mermaid_output(self) -> None:
+        sm = StateMachine(
+            states=["a", "b"],
+            initial="a",
+            transitions=[("a", "b", "go")],
+        )
+        mermaid = sm.to_mermaid()
+        assert "stateDiagram-v2" in mermaid
+        assert "[*] --> a" in mermaid
+        assert "a --> b : go" in mermaid
+
+
+class TestSnapshot:
+    def test_snapshot_captures_state_and_history(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm")
+        snap = sm.snapshot()
+        assert snap == {"state": "confirmed", "history": ["pending"]}
+
+    def test_restore_from_snapshot(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm")
+        snap = sm.snapshot()
+        sm.trigger("ship")
+        sm.restore(snap)
+        assert sm.state == "confirmed"
+        assert sm.history == ["pending"]
+
+    def test_restore_invalid_state_raises(self) -> None:
+        sm = _make_order_machine()
+        with pytest.raises(ValueError, match="not in states"):
+            sm.restore({"state": "nonexistent", "history": []})
+
+
+class TestConstructorValidation:
+    def test_empty_states_raises(self) -> None:
+        with pytest.raises(ValueError, match="states must not be empty"):
+            StateMachine(states=[], initial="a", transitions=[])
+
+    def test_invalid_initial_raises(self) -> None:
+        with pytest.raises(ValueError, match="not in states"):
+            StateMachine(states=["a"], initial="b", transitions=[])
+
+    def test_invalid_from_state_raises(self) -> None:
+        with pytest.raises(ValueError, match="from_state"):
+            StateMachine(
+                states=["a", "b"],
+                initial="a",
+                transitions=[("nonexistent", "b", "go")],
+            )
+
+    def test_invalid_to_state_raises(self) -> None:
+        with pytest.raises(ValueError, match="to_state"):
+            StateMachine(
+                states=["a", "b"],
+                initial="a",
+                transitions=[("a", "nonexistent", "go")],
+            )

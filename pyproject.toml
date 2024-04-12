@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "philiprehberger-state-machine"
-version = "0.3.1"
-description = "Lightweight finite state machine with guards and callbacks."
+version = "0.4.0"
+description = "Lightweight finite state machine with guards, callbacks, and visualization."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
