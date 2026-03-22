@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "philiprehberger-state-machine"
+version = "0.1.0"
+description = "Lightweight finite state machine with guards and callbacks."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Philip Rehberger" }]
+keywords = ["state-machine", "fsm", "workflow", "transition", "state"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/philiprehberger/py-state-machine#readme"
+Repository = "https://github.com/philiprehberger/py-state-machine"
+Issues = "https://github.com/philiprehberger/py-state-machine/issues"
+Changelog = "https://github.com/philiprehberger/py-state-machine/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/philiprehberger_state_machine"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
