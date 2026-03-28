@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 __all__ = ["InvalidTransitionError", "StateMachine"]
 
 
@@ -48,6 +50,39 @@ class StateMachine:
         self._history: list[str] = []
         self._on_enter: dict[str, list[object]] = {}
         self._on_exit: dict[str, list[object]] = {}
+        self._guards: dict[tuple[str, str, str], list[Callable[[dict], bool]]] = {}
+
+    def add_transition(
+        self,
+        from_state: str,
+        to_state: str,
+        event: str,
+        guard: Callable[[dict], bool] | None = None,
+    ) -> None:
+        """Add a transition with an optional guard condition.
+
+        Args:
+            from_state: Source state.
+            to_state: Destination state.
+            event: Event name that triggers the transition.
+            guard: Optional callable that receives context dict and returns
+                   ``True`` to allow the transition. If it returns falsy,
+                   ``InvalidTransitionError`` is raised.
+        """
+        state_set = set(self._states)
+        if from_state not in state_set:
+            raise ValueError(
+                f"Transition from_state '{from_state}' is not in states"
+            )
+        if to_state not in state_set:
+            raise ValueError(
+                f"Transition to_state '{to_state}' is not in states"
+            )
+        key = (from_state, to_state, event)
+        if key not in [(f, t, e) for f, t, e in self._transitions]:
+            self._transitions.append(key)
+        if guard is not None:
+            self._guards.setdefault(key, []).append(guard)
 
     @property
     def state(self) -> str:
@@ -59,13 +94,27 @@ class StateMachine:
         """Return the list of past states."""
         return list(self._history)
 
-    def trigger(self, event: str) -> None:
+    def trigger(self, event: str, context: dict | None = None) -> None:
         """Execute a transition for the given event.
 
-        Raises ``InvalidTransitionError`` if no matching transition exists.
+        Args:
+            event: The event name to trigger.
+            context: Optional dict passed to guards and callbacks. Defaults
+                     to an empty dict.
+
+        Raises ``InvalidTransitionError`` if no matching transition exists
+        or if a guard rejects the transition.
         """
+        ctx = context if context is not None else {}
+
         for from_state, to_state, evt in self._transitions:
             if from_state == self._state and evt == event:
+                # Check guards
+                key = (from_state, to_state, evt)
+                for guard in self._guards.get(key, []):
+                    if not guard(ctx):
+                        raise InvalidTransitionError(self._state, event)
+
                 old_state = self._state
 
                 # Fire on_exit callbacks for the old state

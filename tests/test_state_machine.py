@@ -126,3 +126,60 @@ class TestReset:
         sm.trigger("confirm")
         sm.reset()
         assert sm.history == []
+
+
+class TestGuards:
+    def test_guard_allows_transition(self) -> None:
+        sm = StateMachine(
+            states=["pending", "confirmed"],
+            initial="pending",
+            transitions=[("pending", "confirmed", "confirm")],
+        )
+        sm.add_transition("pending", "confirmed", "confirm", guard=lambda ctx: ctx.get("authorized", False))
+        sm.trigger("confirm", context={"authorized": True})
+        assert sm.state == "confirmed"
+
+    def test_guard_rejects_transition(self) -> None:
+        sm = StateMachine(
+            states=["pending", "confirmed"],
+            initial="pending",
+            transitions=[("pending", "confirmed", "confirm")],
+        )
+        sm.add_transition("pending", "confirmed", "confirm", guard=lambda ctx: ctx.get("authorized", False))
+        with pytest.raises(InvalidTransitionError):
+            sm.trigger("confirm", context={"authorized": False})
+        assert sm.state == "pending"
+
+    def test_guard_with_no_context_gets_empty_dict(self) -> None:
+        received: list[dict] = []
+        sm = StateMachine(
+            states=["a", "b"],
+            initial="a",
+            transitions=[("a", "b", "go")],
+        )
+        sm.add_transition("a", "b", "go", guard=lambda ctx: (received.append(ctx) or True))  # type: ignore[arg-type]
+        sm.trigger("go")
+        assert received == [{}]
+
+    def test_multiple_guards_all_must_pass(self) -> None:
+        sm = StateMachine(
+            states=["a", "b"],
+            initial="a",
+            transitions=[("a", "b", "go")],
+        )
+        sm.add_transition("a", "b", "go", guard=lambda ctx: True)
+        sm.add_transition("a", "b", "go", guard=lambda ctx: False)
+        with pytest.raises(InvalidTransitionError):
+            sm.trigger("go")
+
+
+class TestContext:
+    def test_trigger_with_context(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm", context={"user": "alice"})
+        assert sm.state == "confirmed"
+
+    def test_trigger_without_context(self) -> None:
+        sm = _make_order_machine()
+        sm.trigger("confirm")
+        assert sm.state == "confirmed"
