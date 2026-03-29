@@ -9,7 +9,7 @@
 [![Feature Requests](https://img.shields.io/github/issues/philiprehberger/py-state-machine/enhancement)](https://github.com/philiprehberger/py-state-machine/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
 [![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ec6cb9)](https://github.com/sponsors/philiprehberger)
 
-Lightweight finite state machine with guards and callbacks.
+Lightweight finite state machine with guards, callbacks, and visualization.
 
 ## Installation
 
@@ -128,6 +128,88 @@ print(sm.state)    # "pending"
 print(sm.history)  # []
 ```
 
+### Timeout-Based Automatic Transitions
+
+Define transitions that fire automatically after a state has been active for a given number of seconds.
+
+```python
+from philiprehberger_state_machine import StateMachine
+import time
+
+sm = StateMachine(
+    states=["idle", "processing", "timeout_state"],
+    initial="idle",
+    transitions=[("idle", "processing", "start")],
+)
+
+sm.add_timeout("processing", "timeout_state", seconds=5.0)
+
+sm.trigger("start")
+print(sm.state)  # "processing"
+
+time.sleep(6)
+print(sm.state)  # "timeout_state"
+```
+
+### Snapshot and Restore
+
+Capture and restore the machine's state and history for serialization or checkpointing.
+
+```python
+from philiprehberger_state_machine import StateMachine
+
+sm = StateMachine(
+    states=["a", "b", "c"],
+    initial="a",
+    transitions=[("a", "b", "go"), ("b", "c", "go")],
+)
+
+sm.trigger("go")
+snap = sm.snapshot()
+print(snap)  # {"state": "b", "history": ["a"]}
+
+sm.trigger("go")
+print(sm.state)  # "c"
+
+sm.restore(snap)
+print(sm.state)  # "b"
+```
+
+### Visualization Export
+
+Export the state machine as a DOT (Graphviz) or Mermaid diagram string.
+
+```python
+from philiprehberger_state_machine import StateMachine
+
+sm = StateMachine(
+    states=["pending", "confirmed", "shipped"],
+    initial="pending",
+    transitions=[
+        ("pending", "confirmed", "confirm"),
+        ("confirmed", "shipped", "ship"),
+    ],
+)
+
+print(sm.to_dot())
+# digraph StateMachine {
+#     rankdir=LR;
+#
+#     "pending" [shape=doublecircle];
+#     "confirmed" [shape=circle];
+#     "shipped" [shape=circle];
+#
+#     "pending" -> "confirmed" [label="confirm"];
+#     "confirmed" -> "shipped" [label="ship"];
+# }
+
+print(sm.to_mermaid())
+# stateDiagram-v2
+#     [*] --> pending
+#     pending --> confirmed : confirm
+#     confirmed --> shipped : ship
+```
+
 ## API
 
 | Function / Class | Description |
@@ -141,6 +223,11 @@ print(sm.history)  # []
 | `StateMachine.on_enter(state, callback)` | Register a callback for entering a state |
 | `StateMachine.on_exit(state, callback)` | Register a callback for exiting a state |
 | `StateMachine.reset()` | Reset to initial state and clear history |
+| `StateMachine.add_timeout(state, target, seconds)` | Define an automatic transition after *seconds* in *state* |
+| `StateMachine.snapshot()` | Return a serializable dict of current state and history |
+| `StateMachine.restore(snapshot)` | Restore the machine from a snapshot dict |
+| `StateMachine.to_dot()` | Return a DOT/Graphviz string of the state machine |
+| `StateMachine.to_mermaid()` | Return a Mermaid state diagram string |
 | `InvalidTransitionError` | Raised on invalid transitions; has `.state` and `.event` attributes |
 
 ## Development
