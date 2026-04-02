@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 (2026-04-01)
+
+- Add transition history with timestamps via `transition_history` property and `TransitionRecord` dataclass
+- Add wildcard transitions using `"*"` as source state to match any current state
+- Expand wildcard transitions in DOT and Mermaid visualization exports
+
 ## 0.3.1 (2026-03-31)
 
 - Standardize README to 3-badge format with emoji Support section

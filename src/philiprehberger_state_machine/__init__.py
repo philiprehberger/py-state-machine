@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Callable
 
-__all__ = ["InvalidTransitionError", "StateMachine"]
+__all__ = ["InvalidTransitionError", "StateMachine", "TransitionRecord"]
 
 
 class InvalidTransitionError(Exception):
@@ -18,6 +19,16 @@ class InvalidTransitionError(Exception):
         super().__init__(
             f"No transition for event '{event}' from state '{state}'"
         )
+
+
+@dataclass(frozen=True)
+class TransitionRecord:
+    """Immutable record of a single state transition with timestamp."""
+
+    from_state: str
+    to_state: str
+    event: str
+    timestamp: float
 
 
 class _TimeoutEntry:
@@ -49,7 +60,7 @@ class StateMachine:
 
         state_set = set(states)
         for from_state, to_state, event in transitions:
-            if from_state not in state_set:
+            if from_state != "*" and from_state not in state_set:
                 raise ValueError(
                     f"Transition from_state '{from_state}' is not in states"
                 )
@@ -63,6 +74,7 @@ class StateMachine:
         self._transitions = list(transitions)
         self._state = initial
         self._history: list[str] = []
+        self._transition_history: list[TransitionRecord] = []
         self._on_enter: dict[str, list[Callable[[str, str], Any]]] = {}
         self._on_exit: dict[str, list[Callable[[str, str], Any]]] = {}
         self._guards: dict[tuple[str, str, str], list[Callable[[dict[str, Any]], bool]]] = {}
@@ -82,8 +94,11 @@ class StateMachine:
     ) -> None:
         """Add a transition with an optional guard condition.
 
+        Use ``"*"`` as *from_state* to create a wildcard transition that
+        matches any current state.
+
         Args:
-            from_state: Source state.
+            from_state: Source state, or ``"*"`` for wildcard.
             to_state: Destination state.
             event: Event name that triggers the transition.
             guard: Optional callable that receives context dict and returns
@@ -91,7 +106,7 @@ class StateMachine:
                    ``InvalidTransitionError`` is raised.
         """
         state_set = set(self._states)
-        if from_state not in state_set:
+        if from_state != "*" and from_state not in state_set:
             raise ValueError(
                 f"Transition from_state '{from_state}' is not in states"
             )
@@ -115,6 +130,11 @@ class StateMachine:
         """Return the list of past states."""
         return list(self._history)
 
+    @property
+    def transition_history(self) -> list[TransitionRecord]:
+        """Return a list of all past transition records with timestamps."""
+        return list(self._transition_history)
+
     def trigger(self, event: str, context: dict[str, Any] | None = None) -> None:
         """Execute a transition for the given event.
 
@@ -129,25 +149,51 @@ class StateMachine:
         ctx = context if context is not None else {}
 
         with self._lock:
+            # Try exact state match first, fall back to wildcard
+            wildcard_match: tuple[str, str, str] | None = None
             for from_state, to_state, evt in self._transitions:
-                if from_state == self._state and evt == event:
-                    # Check guards
+                if evt != event:
+                    continue
+                if from_state == self._state:
                     key = (from_state, to_state, evt)
                     for guard in self._guards.get(key, []):
                         if not guard(ctx):
                             raise InvalidTransitionError(self._state, event)
-
-                    self._perform_transition(from_state, to_state, event)
+                    self._perform_transition(self._state, to_state, event, from_state)
                     return
+                if from_state == "*" and wildcard_match is None:
+                    wildcard_match = (from_state, to_state, evt)
+
+            if wildcard_match is not None:
+                from_state, to_state, evt = wildcard_match
+                key = (from_state, to_state, evt)
+                for guard in self._guards.get(key, []):
+                    if not guard(ctx):
+                        raise InvalidTransitionError(self._state, event)
+                self._perform_transition(self._state, to_state, event, from_state)
+                return
 
             raise InvalidTransitionError(self._state, event)
 
-    def _perform_transition(self, from_state: str, to_state: str, event: str) -> None:
+    def _perform_transition(
+        self,
+        actual_from: str,
+        to_state: str,
+        event: str,
+        transition_source: str | None = None,
+    ) -> None:
         """Execute the transition side-effects (callbacks, history, timeouts).
 
         Must be called while ``self._lock`` is held.
+
+        Args:
+            actual_from: The real current state being exited.
+            to_state: The destination state.
+            event: The event that triggered the transition.
+            transition_source: The ``from_state`` in the transition definition
+                (may be ``"*"`` for wildcard). Defaults to *actual_from*.
         """
-        old_state = from_state
+        old_state = actual_from
 
         # Cancel any active timeout for the old state
         self._cancel_timeout(old_state)
@@ -157,6 +203,14 @@ class StateMachine:
             callback(old_state, event)
 
         self._history.append(old_state)
+        self._transition_history.append(
+            TransitionRecord(
+                from_state=old_state,
+                to_state=to_state,
+                event=event,
+                timestamp=time.time(),
+            )
+        )
         self._state = to_state
 
         # Fire on_enter callbacks for the new state
@@ -169,7 +223,7 @@ class StateMachine:
     def can(self, event: str) -> bool:
         """Return whether *event* is a valid transition from the current state."""
         return any(
-            from_state == self._state and evt == event
+            (from_state == self._state or from_state == "*") and evt == event
             for from_state, _, evt in self._transitions
         )
 
@@ -193,6 +247,7 @@ class StateMachine:
             self._cancel_all_timeouts()
             self._state = self._initial
             self._history.clear()
+            self._transition_history.clear()
             self._start_timeout(self._initial)
 
     # ------------------------------------------------------------------
@@ -329,7 +384,13 @@ class StateMachine:
 
         # Draw transitions
         for from_state, to_state, event in self._transitions:
-            lines.append(f'    "{from_state}" -> "{to_state}" [label="{event}"];')
+            if from_state == "*":
+                # Wildcard: draw an edge from every state
+                for s in self._states:
+                    if s != to_state:
+                        lines.append(f'    "{s}" -> "{to_state}" [label="{event}"];')
+            else:
+                lines.append(f'    "{from_state}" -> "{to_state}" [label="{event}"];')
 
         lines.append("}")
         return "\n".join(lines)
@@ -348,6 +409,12 @@ class StateMachine:
 
         # Draw transitions
         for from_state, to_state, event in self._transitions:
-            lines.append(f"    {from_state} --> {to_state} : {event}")
+            if from_state == "*":
+                # Wildcard: draw an edge from every state
+                for s in self._states:
+                    if s != to_state:
+                        lines.append(f"    {s} --> {to_state} : {event}")
+            else:
+                lines.append(f"    {from_state} --> {to_state} : {event}")
 
         return "\n".join(lines)

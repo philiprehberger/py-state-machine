@@ -100,6 +100,57 @@ sm.trigger("confirm", context={"user": "alice", "approved": True})
 
 If no context is provided, an empty dict is passed to guards.
 
+### Wildcard Transitions
+
+Use `"*"` as the source state to define a transition that can fire from any state.
+
+```python
+from philiprehberger_state_machine import StateMachine
+
+sm = StateMachine(
+    states=["idle", "running", "paused", "error"],
+    initial="idle",
+    transitions=[
+        ("idle", "running", "start"),
+        ("running", "paused", "pause"),
+        ("*", "error", "fail"),
+    ],
+)
+
+sm.trigger("start")
+print(sm.state)  # "running"
+
+sm.trigger("fail")
+print(sm.state)  # "error"
+```
+
+Wildcard transitions are checked after exact state matches, so a specific transition always takes priority.
+
+### Transition History
+
+Track all past transitions with timestamps using `transition_history`.
+
+```python
+from philiprehberger_state_machine import StateMachine
+
+sm = StateMachine(
+    states=["pending", "confirmed", "shipped"],
+    initial="pending",
+    transitions=[
+        ("pending", "confirmed", "confirm"),
+        ("confirmed", "shipped", "ship"),
+    ],
+)
+
+sm.trigger("confirm")
+sm.trigger("ship")
+
+for record in sm.transition_history:
+    print(f"{record.from_state} -> {record.to_state} via {record.event} at {record.timestamp}")
+# pending -> confirmed via confirm at 1711929600.123
+# confirmed -> shipped via ship at 1711929600.456
+```
+
 ### History and Reset
 
 ```python
@@ -212,9 +263,10 @@ print(sm.to_mermaid())
 | `StateMachine(states, initial, transitions)` | Create a state machine with given states, initial state, and transitions |
 | `StateMachine.state` | Current state (read-only property) |
 | `StateMachine.history` | List of past states (read-only property) |
+| `StateMachine.transition_history` | List of `TransitionRecord` objects with timestamps (read-only property) |
 | `StateMachine.trigger(event, context=None)` | Execute a transition or raise `InvalidTransitionError`. Pass optional context dict to guards. |
 | `StateMachine.can(event)` | Return whether the event is valid from the current state |
-| `StateMachine.add_transition(from_state, to_state, event, guard=None)` | Add a transition with an optional guard callable |
+| `StateMachine.add_transition(from_state, to_state, event, guard=None)` | Add a transition with an optional guard callable. Use `"*"` as from_state for wildcard. |
 | `StateMachine.on_enter(state, callback)` | Register a callback for entering a state |
 | `StateMachine.on_exit(state, callback)` | Register a callback for exiting a state |
 | `StateMachine.reset()` | Reset to initial state and clear history |
@@ -223,6 +275,7 @@ print(sm.to_mermaid())
 | `StateMachine.restore(snapshot)` | Restore the machine from a snapshot dict |
 | `StateMachine.to_dot()` | Return a DOT/Graphviz string of the state machine |
 | `StateMachine.to_mermaid()` | Return a Mermaid state diagram string |
+| `TransitionRecord` | Frozen dataclass with `from_state`, `to_state`, `event`, and `timestamp` fields |
 | `InvalidTransitionError` | Raised on invalid transitions; has `.state` and `.event` attributes |
 
 ## Development
