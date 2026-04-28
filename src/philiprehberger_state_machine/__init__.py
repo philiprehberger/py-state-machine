@@ -79,6 +79,9 @@ class StateMachine:
         self._on_exit: dict[str, list[Callable[[str, str], Any]]] = {}
         self._guards: dict[tuple[str, str, str], list[Callable[[dict[str, Any]], bool]]] = {}
         self._timeouts: dict[str, _TimeoutEntry] = {}
+        self._transition_listeners: list[
+            Callable[[str, str, str | None, dict[str, Any] | None], None]
+        ] = []
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -159,7 +162,11 @@ class StateMachine:
                     for guard in self._guards.get(key, []):
                         if not guard(ctx):
                             raise InvalidTransitionError(self._state, event)
-                    self._perform_transition(self._state, to_state, event, from_state)
+                    actual_from = self._state
+                    self._perform_transition(actual_from, to_state, event, from_state)
+                    self._notify_transition_listeners(
+                        actual_from, to_state, event, context
+                    )
                     return
                 if from_state == "*" and wildcard_match is None:
                     wildcard_match = (from_state, to_state, evt)
@@ -170,7 +177,11 @@ class StateMachine:
                 for guard in self._guards.get(key, []):
                     if not guard(ctx):
                         raise InvalidTransitionError(self._state, event)
-                self._perform_transition(self._state, to_state, event, from_state)
+                actual_from = self._state
+                self._perform_transition(actual_from, to_state, event, from_state)
+                self._notify_transition_listeners(
+                    actual_from, to_state, event, context
+                )
                 return
 
             raise InvalidTransitionError(self._state, event)
@@ -240,6 +251,57 @@ class StateMachine:
         The callback receives ``(state, event)`` arguments.
         """
         self._on_exit.setdefault(state, []).append(callback)
+
+    def on_transition(
+        self,
+        callback: Callable[[str, str, str | None, dict[str, Any] | None], None],
+    ) -> Callable[[], None]:
+        """Register a callback fired AFTER any successful transition.
+
+        The callback receives ``(from_state, to_state, event, context)``.
+        Multiple listeners fire in registration order. Listeners do not fire
+        when a transition is rejected by a guard.
+
+        Returns:
+            An unsubscribe function. Calling it removes this listener from
+            the registry. Calling it more than once is a no-op.
+        """
+        self._transition_listeners.append(callback)
+
+        def _unsubscribe() -> None:
+            try:
+                self._transition_listeners.remove(callback)
+            except ValueError:
+                pass
+
+        return _unsubscribe
+
+    def remove_transition_listener(
+        self,
+        callback: Callable[[str, str, str | None, dict[str, Any] | None], None],
+    ) -> bool:
+        """Remove a previously registered transition listener.
+
+        Returns ``True`` if the listener was registered and was removed,
+        ``False`` if it was not registered.
+        """
+        try:
+            self._transition_listeners.remove(callback)
+            return True
+        except ValueError:
+            return False
+
+    def _notify_transition_listeners(
+        self,
+        from_state: str,
+        to_state: str,
+        event: str,
+        context: dict[str, Any] | None,
+    ) -> None:
+        """Invoke all registered transition listeners in order."""
+        # Iterate over a copy so listeners can safely unsubscribe themselves.
+        for listener in list(self._transition_listeners):
+            listener(from_state, to_state, event, context)
 
     def reset(self) -> None:
         """Reset to the initial state and clear history."""

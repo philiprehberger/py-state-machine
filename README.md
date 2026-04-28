@@ -126,6 +126,37 @@ print(sm.state)  # "error"
 
 Wildcard transitions are checked after exact state matches, so a specific transition always takes priority.
 
+### Global transition hook
+
+Register a listener that fires after every successful transition. Useful for logging, metrics, or auditing.
+
+```python
+import logging
+from philiprehberger_state_machine import StateMachine
+
+log = logging.getLogger(__name__)
+
+sm = StateMachine(
+    states=["pending", "confirmed", "shipped"],
+    initial="pending",
+    transitions=[
+        ("pending", "confirmed", "confirm"),
+        ("confirmed", "shipped", "ship"),
+    ],
+)
+
+unsubscribe = sm.on_transition(
+    lambda fr, to, ev, ctx: log.info("transition %s -> %s via %s", fr, to, ev)
+)
+
+sm.trigger("confirm")
+sm.trigger("ship")
+
+unsubscribe()  # remove the listener
+```
+
+The callback receives `(from_state, to_state, event, context)`. Listeners fire in registration order, after `on_exit` and `on_enter` callbacks. Listeners do not fire when a guard rejects a transition.
+
 ### Transition History
 
 Track all past transitions with timestamps using `transition_history`.
@@ -269,6 +300,8 @@ print(sm.to_mermaid())
 | `StateMachine.add_transition(from_state, to_state, event, guard=None)` | Add a transition with an optional guard callable. Use `"*"` as from_state for wildcard. |
 | `StateMachine.on_enter(state, callback)` | Register a callback for entering a state |
 | `StateMachine.on_exit(state, callback)` | Register a callback for exiting a state |
+| `StateMachine.on_transition(callback)` | Register a global listener fired after every successful transition with `(from_state, to_state, event, context)`. Returns an unsubscribe closure. |
+| `StateMachine.remove_transition_listener(callback)` | Remove a previously registered transition listener. Returns `True` if removed. |
 | `StateMachine.reset()` | Reset to initial state and clear history |
 | `StateMachine.add_timeout(state, target, seconds)` | Define an automatic transition after *seconds* in *state* |
 | `StateMachine.snapshot()` | Return a serializable dict of current state and history |

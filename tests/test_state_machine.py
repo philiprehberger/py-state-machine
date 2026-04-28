@@ -475,6 +475,172 @@ class TestSnapshot:
             sm.restore({"state": "nonexistent", "history": []})
 
 
+class TestOnTransition:
+    def test_listener_receives_from_to_event_context(self) -> None:
+        sm = _make_order_machine()
+        calls: list[tuple[str, str, str | None, dict | None]] = []
+        sm.on_transition(lambda fr, to, ev, ctx: calls.append((fr, to, ev, ctx)))
+        sm.trigger("confirm", context={"user": "alice"})
+        assert calls == [("pending", "confirmed", "confirm", {"user": "alice"})]
+
+    def test_listener_receives_none_context_when_omitted(self) -> None:
+        sm = _make_order_machine()
+        calls: list[tuple[str, str, str | None, dict | None]] = []
+        sm.on_transition(lambda fr, to, ev, ctx: calls.append((fr, to, ev, ctx)))
+        sm.trigger("confirm")
+        assert calls == [("pending", "confirmed", "confirm", None)]
+
+    def test_multiple_listeners_fire_in_registration_order(self) -> None:
+        sm = _make_order_machine()
+        order: list[str] = []
+        sm.on_transition(lambda fr, to, ev, ctx: order.append("first"))
+        sm.on_transition(lambda fr, to, ev, ctx: order.append("second"))
+        sm.on_transition(lambda fr, to, ev, ctx: order.append("third"))
+        sm.trigger("confirm")
+        assert order == ["first", "second", "third"]
+
+    def test_unsubscribe_closure_removes_listener(self) -> None:
+        sm = _make_order_machine()
+        calls_a: list[str] = []
+        calls_b: list[str] = []
+        unsubscribe_a = sm.on_transition(
+            lambda fr, to, ev, ctx: calls_a.append(to)
+        )
+        sm.on_transition(lambda fr, to, ev, ctx: calls_b.append(to))
+
+        sm.trigger("confirm")
+        assert calls_a == ["confirmed"]
+        assert calls_b == ["confirmed"]
+
+        unsubscribe_a()
+        sm.trigger("ship")
+        # Only listener B should still be active
+        assert calls_a == ["confirmed"]
+        assert calls_b == ["confirmed", "shipped"]
+
+    def test_unsubscribe_closure_idempotent(self) -> None:
+        sm = _make_order_machine()
+        unsubscribe = sm.on_transition(lambda fr, to, ev, ctx: None)
+        unsubscribe()
+        # Calling again should not raise
+        unsubscribe()
+
+    def test_remove_transition_listener_returns_true_when_removed(self) -> None:
+        sm = _make_order_machine()
+
+        def listener(fr: str, to: str, ev: str | None, ctx: dict | None) -> None:
+            pass
+
+        sm.on_transition(listener)
+        assert sm.remove_transition_listener(listener) is True
+
+    def test_remove_transition_listener_returns_false_when_absent(self) -> None:
+        sm = _make_order_machine()
+
+        def listener(fr: str, to: str, ev: str | None, ctx: dict | None) -> None:
+            pass
+
+        assert sm.remove_transition_listener(listener) is False
+
+    def test_remove_transition_listener_only_removes_that_listener(self) -> None:
+        sm = _make_order_machine()
+        calls_a: list[str] = []
+        calls_b: list[str] = []
+
+        def listener_a(fr: str, to: str, ev: str | None, ctx: dict | None) -> None:
+            calls_a.append(to)
+
+        def listener_b(fr: str, to: str, ev: str | None, ctx: dict | None) -> None:
+            calls_b.append(to)
+
+        sm.on_transition(listener_a)
+        sm.on_transition(listener_b)
+
+        sm.remove_transition_listener(listener_a)
+
+        sm.trigger("confirm")
+        assert calls_a == []
+        assert calls_b == ["confirmed"]
+
+    def test_listener_fires_after_on_enter_and_on_exit(self) -> None:
+        sm = _make_order_machine()
+        events: list[str] = []
+        sm.on_exit("pending", lambda s, e: events.append("exit"))
+        sm.on_enter("confirmed", lambda s, e: events.append("enter"))
+        sm.on_transition(lambda fr, to, ev, ctx: events.append("transition"))
+        sm.trigger("confirm")
+        assert events == ["exit", "enter", "transition"]
+
+    def test_listener_does_not_fire_when_guard_rejects(self) -> None:
+        sm = StateMachine(
+            states=["pending", "confirmed"],
+            initial="pending",
+            transitions=[("pending", "confirmed", "confirm")],
+        )
+        sm.add_transition(
+            "pending",
+            "confirmed",
+            "confirm",
+            guard=lambda ctx: ctx.get("authorized", False),
+        )
+        calls: list[tuple[str, str]] = []
+        sm.on_transition(lambda fr, to, ev, ctx: calls.append((fr, to)))
+
+        with pytest.raises(InvalidTransitionError):
+            sm.trigger("confirm", context={"authorized": False})
+
+        assert calls == []
+        assert sm.state == "pending"
+
+        # Sanity: when the guard passes, the listener does fire
+        sm.trigger("confirm", context={"authorized": True})
+        assert calls == [("pending", "confirmed")]
+
+    def test_listener_does_not_fire_on_unknown_event(self) -> None:
+        sm = _make_order_machine()
+        calls: list[str] = []
+        sm.on_transition(lambda fr, to, ev, ctx: calls.append(to))
+        with pytest.raises(InvalidTransitionError):
+            sm.trigger("nonexistent")
+        assert calls == []
+
+    def test_listener_fires_on_wildcard_transition(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "error"],
+            initial="a",
+            transitions=[
+                ("a", "b", "go"),
+                ("*", "error", "fail"),
+            ],
+        )
+        calls: list[tuple[str, str, str | None]] = []
+        sm.on_transition(lambda fr, to, ev, ctx: calls.append((fr, to, ev)))
+        sm.trigger("go")
+        sm.trigger("fail")
+        assert calls == [("a", "b", "go"), ("b", "error", "fail")]
+
+    def test_snapshot_does_not_capture_listeners(self) -> None:
+        """Listeners are runtime-only — snapshot/restore preserves the
+        current listener registrations (not the snapshot's listener set)."""
+        sm = _make_order_machine()
+        calls: list[str] = []
+        sm.on_transition(lambda fr, to, ev, ctx: calls.append(to))
+        snap = sm.snapshot()
+        # The snapshot dict is a plain {state, history} pair only
+        assert set(snap.keys()) == {"state", "history"}
+
+        # Registering more listeners after snapshot, then restore, should not
+        # roll back the listener set
+        calls_b: list[str] = []
+        sm.on_transition(lambda fr, to, ev, ctx: calls_b.append(to))
+        sm.restore(snap)
+
+        sm.trigger("confirm")
+        # Both listeners (registered before AND after snapshot) still fire
+        assert calls == ["confirmed"]
+        assert calls_b == ["confirmed"]
+
+
 class TestConstructorValidation:
     def test_empty_states_raises(self) -> None:
         with pytest.raises(ValueError, match="states must not be empty"):

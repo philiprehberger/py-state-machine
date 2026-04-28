@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 (2026-04-27)
+
+- Add `on_transition(callback)` global hook firing after every successful transition with `(from_state, to_state, event, context)`
+- Add `remove_transition_listener(callback)` for symmetry
+- `on_transition` returns an unsubscribe closure
+
 ## 0.4.0 (2026-04-01)
 
 - Add transition history with timestamps via `transition_history` property and `TransitionRecord` dataclass
