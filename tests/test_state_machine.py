@@ -665,3 +665,37 @@ class TestConstructorValidation:
                 initial="a",
                 transitions=[("a", "nonexistent", "go")],
             )
+
+
+class TestAvailableEvents:
+    def test_returns_events_for_current_state(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "c"],
+            initial="a",
+            transitions=[("a", "b", "go"), ("a", "c", "skip"), ("b", "c", "next")],
+        )
+        assert sm.available_events() == ["go", "skip"]
+
+    def test_includes_wildcard_events(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "err"],
+            initial="a",
+            transitions=[("a", "b", "go"), ("*", "err", "fail")],
+        )
+        assert sm.available_events() == ["go", "fail"]
+
+    def test_no_duplicates_when_wildcard_overlaps(self) -> None:
+        sm = StateMachine(
+            states=["a", "b"],
+            initial="a",
+            transitions=[("a", "b", "go"), ("*", "b", "go")],
+        )
+        assert sm.available_events() == ["go"]
+
+    def test_empty_when_no_outgoing_transitions(self) -> None:
+        sm = StateMachine(
+            states=["a", "b"],
+            initial="b",
+            transitions=[("a", "b", "go")],
+        )
+        assert sm.available_events() == []

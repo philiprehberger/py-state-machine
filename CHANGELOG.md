@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 (2026-06-15)
+
+- Add `available_events()` returning the deduped list of events that can fire from the current state (including wildcard transitions)
+- Add package-card image to README
+
 ## 0.5.0 (2026-04-27)
 
 - Add `on_transition(callback)` global hook firing after every successful transition with `(from_state, to_state, event, context)`

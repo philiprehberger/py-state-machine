@@ -4,6 +4,8 @@
 [![PyPI version](https://img.shields.io/pypi/v/philiprehberger-state-machine.svg)](https://pypi.org/project/philiprehberger-state-machine/)
 [![Last updated](https://img.shields.io/github/last-commit/philiprehberger/py-state-machine)](https://github.com/philiprehberger/py-state-machine/commits/main)
 
+![philiprehberger-state-machine](https://raw.githubusercontent.com/philiprehberger/py-state-machine/main/package-card.webp)
+
 Lightweight finite state machine with guards, callbacks, and visualization.
 
 ## Installation
@@ -47,6 +49,9 @@ sm = StateMachine(
 
 sm.can("confirm")  # True
 sm.can("ship")     # False
+
+# All events that can fire from the current state (deduped)
+sm.available_events()  # ["confirm"]
 ```
 
 ### Callbacks
@@ -297,6 +302,7 @@ print(sm.to_mermaid())
 | `StateMachine.transition_history` | List of `TransitionRecord` objects with timestamps (read-only property) |
 | `StateMachine.trigger(event, context=None)` | Execute a transition or raise `InvalidTransitionError`. Pass optional context dict to guards. |
 | `StateMachine.can(event)` | Return whether the event is valid from the current state |
+| `StateMachine.available_events()` | List of events (deduped) that can fire from the current state, including wildcards |
 | `StateMachine.add_transition(from_state, to_state, event, guard=None)` | Add a transition with an optional guard callable. Use `"*"` as from_state for wildcard. |
 | `StateMachine.on_enter(state, callback)` | Register a callback for entering a state |
 | `StateMachine.on_exit(state, callback)` | Register a callback for exiting a state |

@@ -238,6 +238,22 @@ class StateMachine:
             for from_state, _, evt in self._transitions
         )
 
+    def available_events(self) -> list[str]:
+        """Return events that can fire from the current state.
+
+        Includes both exact-match and wildcard transitions, de-duplicated in
+        first-seen order. Pairs naturally with :meth:`can` for menu/UX
+        rendering.
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for from_state, _, evt in self._transitions:
+            if from_state == self._state or from_state == "*":
+                if evt not in seen:
+                    seen.add(evt)
+                    result.append(evt)
+        return result
+
     def on_enter(self, state: str, callback: Callable[[str, str], Any]) -> None:
         """Register a callback invoked when entering *state*.
 
