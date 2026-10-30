@@ -52,13 +52,34 @@ class StateMachine:
         states: list[str],
         initial: str,
         transitions: list[tuple[str, str, str]],
+        final_states: list[str] | None = None,
     ) -> None:
+        """Create a state machine.
+
+        Args:
+            states: All valid state names.
+            initial: The starting state.
+            transitions: ``(from_state, to_state, event)`` tuples. Use ``"*"``
+                as *from_state* for a wildcard transition.
+            final_states: Optional terminal states. A final state may not
+                have outgoing transitions; wildcard transitions and timeouts
+                never fire from it.
+
+        Raises ``ValueError`` if a state is unknown or a transition leaves a
+        final state.
+        """
         if not states:
             raise ValueError("states must not be empty")
         if initial not in states:
             raise ValueError(f"Initial state '{initial}' is not in states")
 
         state_set = set(states)
+        final_set: set[str] = set()
+        for final in final_states or []:
+            if final not in state_set:
+                raise ValueError(f"Final state '{final}' is not in states")
+            final_set.add(final)
+
         for from_state, to_state, event in transitions:
             if from_state != "*" and from_state not in state_set:
                 raise ValueError(
@@ -68,8 +89,13 @@ class StateMachine:
                 raise ValueError(
                     f"Transition to_state '{to_state}' is not in states"
                 )
+            if from_state in final_set:
+                raise ValueError(
+                    f"Transition from_state '{from_state}' is a final state"
+                )
 
         self._states = list(states)
+        self._final_states = final_set
         self._initial = initial
         self._transitions = list(transitions)
         self._state = initial
@@ -117,6 +143,10 @@ class StateMachine:
             raise ValueError(
                 f"Transition to_state '{to_state}' is not in states"
             )
+        if from_state in self._final_states:
+            raise ValueError(
+                f"Transition from_state '{from_state}' is a final state"
+            )
         key = (from_state, to_state, event)
         if key not in [(f, t, e) for f, t, e in self._transitions]:
             self._transitions.append(key)
@@ -127,6 +157,16 @@ class StateMachine:
     def state(self) -> str:
         """Return the current state."""
         return self._state
+
+    @property
+    def is_final(self) -> bool:
+        """Return whether the current state is a final (terminal) state."""
+        return self._state in self._final_states
+
+    @property
+    def final_states(self) -> list[str]:
+        """Return the configured final states in declaration order."""
+        return [s for s in self._states if s in self._final_states]
 
     @property
     def history(self) -> list[str]:
@@ -146,12 +186,16 @@ class StateMachine:
             context: Optional dict passed to guards and callbacks. Defaults
                      to an empty dict.
 
-        Raises ``InvalidTransitionError`` if no matching transition exists
-        or if a guard rejects the transition.
+        Raises ``InvalidTransitionError`` if no matching transition exists,
+        if a guard rejects the transition, or if the machine is in a final
+        state.
         """
         ctx = context if context is not None else {}
 
         with self._lock:
+            if self._state in self._final_states:
+                raise InvalidTransitionError(self._state, event)
+
             # Try exact state match first, fall back to wildcard
             wildcard_match: tuple[str, str, str] | None = None
             for from_state, to_state, evt in self._transitions:
@@ -233,6 +277,8 @@ class StateMachine:
 
     def can(self, event: str) -> bool:
         """Return whether *event* is a valid transition from the current state."""
+        if self._state in self._final_states:
+            return False
         return any(
             (from_state == self._state or from_state == "*") and evt == event
             for from_state, _, evt in self._transitions
@@ -243,8 +289,10 @@ class StateMachine:
 
         Includes both exact-match and wildcard transitions, de-duplicated in
         first-seen order. Pairs naturally with :meth:`can` for menu/UX
-        rendering.
+        rendering. Always empty in a final state.
         """
+        if self._state in self._final_states:
+            return []
         seen: set[str] = set()
         result: list[str] = []
         for from_state, _, evt in self._transitions:
@@ -252,6 +300,35 @@ class StateMachine:
                 if evt not in seen:
                     seen.add(evt)
                     result.append(evt)
+        return result
+
+    def transitions_from(self, state: str | None = None) -> list[tuple[str, str]]:
+        """Return the ``(event, to_state)`` pairs that can fire from *state*.
+
+        Mirrors the resolution :meth:`trigger` uses: exact-match transitions
+        come first in definition order, then wildcard transitions whose event
+        is not already handled by an exact match. Only the first transition
+        per event is listed, since that is the one :meth:`trigger` would
+        take. Guards are not evaluated. Always empty for a final state.
+
+        Args:
+            state: The state to inspect. Defaults to the current state.
+
+        Raises ``ValueError`` if *state* is not a known state.
+        """
+        source = self._state if state is None else state
+        if source not in self._states:
+            raise ValueError(f"State '{source}' is not in states")
+        if source in self._final_states:
+            return []
+
+        seen: set[str] = set()
+        result: list[tuple[str, str]] = []
+        for wanted in (source, "*"):
+            for from_state, to_state, evt in self._transitions:
+                if from_state == wanted and evt not in seen:
+                    seen.add(evt)
+                    result.append((evt, to_state))
         return result
 
     def on_enter(self, state: str, callback: Callable[[str, str], Any]) -> None:
@@ -353,6 +430,8 @@ class StateMachine:
             raise ValueError(f"Target state '{target}' is not in states")
         if seconds <= 0:
             raise ValueError("seconds must be positive")
+        if state in self._final_states:
+            raise ValueError(f"State '{state}' is a final state")
 
         # Ensure a transition exists for the timeout event
         timeout_key = (state, target, "__timeout__")
@@ -404,21 +483,27 @@ class StateMachine:
         """Return a serializable dict capturing the current state and history.
 
         The snapshot can be passed to :meth:`restore` to return the machine
-        to this exact point.
+        to this exact point. When final states are configured, the snapshot
+        also includes a ``"final_states"`` list.
         """
-        return {
+        snap: dict[str, Any] = {
             "state": self._state,
             "history": list(self._history),
         }
+        if self._final_states:
+            snap["final_states"] = self.final_states
+        return snap
 
     def restore(self, snapshot: dict[str, Any]) -> None:
         """Restore the machine from a snapshot previously created by
         :meth:`snapshot`.
 
         Args:
-            snapshot: A dict with ``"state"`` and ``"history"`` keys.
+            snapshot: A dict with ``"state"`` and ``"history"`` keys, and an
+                optional ``"final_states"`` key.
 
-        Raises ``ValueError`` if the snapshot contains an invalid state.
+        Raises ``ValueError`` if the snapshot contains an invalid state, or
+        if its ``"final_states"`` do not match this machine's final states.
         """
         state = snapshot["state"]
         history = snapshot["history"]
@@ -430,6 +515,17 @@ class StateMachine:
             if h not in state_set:
                 raise ValueError(
                     f"Snapshot history contains invalid state '{h}'"
+                )
+        if "final_states" in snapshot:
+            snap_finals = snapshot["final_states"]
+            for f in snap_finals:
+                if f not in state_set:
+                    raise ValueError(
+                        f"Snapshot final state '{f}' is not in states"
+                    )
+            if set(snap_finals) != self._final_states:
+                raise ValueError(
+                    "Snapshot final_states do not match this machine's final states"
                 )
 
         with self._lock:
@@ -446,7 +542,8 @@ class StateMachine:
         """Return a DOT (Graphviz) representation of the state machine.
 
         The output can be rendered with ``dot -Tpng file.dot -o file.png``
-        or any Graphviz-compatible tool.
+        or any Graphviz-compatible tool. The initial state is drawn as a
+        double circle; final states are filled gray.
         """
         lines: list[str] = []
         lines.append("digraph StateMachine {")
@@ -456,7 +553,12 @@ class StateMachine:
         # Mark initial state with a double circle
         for s in self._states:
             shape = "doublecircle" if s == self._initial else "circle"
-            lines.append(f'    "{s}" [shape={shape}];')
+            if s in self._final_states:
+                lines.append(
+                    f'    "{s}" [shape={shape}, style=filled, fillcolor=lightgray];'
+                )
+            else:
+                lines.append(f'    "{s}" [shape={shape}];')
 
         lines.append("")
 
@@ -465,7 +567,7 @@ class StateMachine:
             if from_state == "*":
                 # Wildcard: draw an edge from every state
                 for s in self._states:
-                    if s != to_state:
+                    if s != to_state and s not in self._final_states:
                         lines.append(f'    "{s}" -> "{to_state}" [label="{event}"];')
             else:
                 lines.append(f'    "{from_state}" -> "{to_state}" [label="{event}"];')
@@ -477,7 +579,7 @@ class StateMachine:
         """Return a Mermaid state diagram string.
 
         The output can be embedded in Markdown or rendered by any Mermaid
-        compatible tool.
+        compatible tool. Final states get an edge to ``[*]``.
         """
         lines: list[str] = []
         lines.append("stateDiagram-v2")
@@ -490,9 +592,13 @@ class StateMachine:
             if from_state == "*":
                 # Wildcard: draw an edge from every state
                 for s in self._states:
-                    if s != to_state:
+                    if s != to_state and s not in self._final_states:
                         lines.append(f"    {s} --> {to_state} : {event}")
             else:
                 lines.append(f"    {from_state} --> {to_state} : {event}")
+
+        # Mark final states
+        for s in self.final_states:
+            lines.append(f"    {s} --> [*]")
 
         return "\n".join(lines)

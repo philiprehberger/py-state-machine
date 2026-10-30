@@ -52,7 +52,42 @@ sm.can("ship")     # False
 
 # All events that can fire from the current state (deduped)
 sm.available_events()  # ["confirm"]
+
+# (event, to_state) pairs, for the current state or any other state
+sm.transitions_from()             # [("confirm", "confirmed")]
+sm.transitions_from("confirmed")  # [("ship", "shipped")]
 ```
+
+`transitions_from()` follows the same resolution as `trigger()`: exact-match transitions first, then wildcards for events not already handled. Guards are not evaluated.
+
+### Final States
+
+Mark terminal states with `final_states`. A final state may not have outgoing transitions, and wildcard transitions and timeouts never fire from it.
+
+```python
+from philiprehberger_state_machine import InvalidTransitionError, StateMachine
+
+sm = StateMachine(
+    states=["pending", "delivered", "cancelled", "error"],
+    initial="pending",
+    transitions=[
+        ("pending", "delivered", "deliver"),
+        ("pending", "cancelled", "cancel"),
+        ("*", "error", "fail"),
+    ],
+    final_states=["delivered", "cancelled"],
+)
+
+sm.trigger("cancel")
+print(sm.is_final)  # True
+
+try:
+    sm.trigger("fail")  # wildcards do not apply to final states
+except InvalidTransitionError:
+    print("already finished")
+```
+
+Unknown final states, or transitions and timeouts defined from a final state, raise `ValueError`. Final states are included in `snapshot()`, checked by `restore()`, filled gray in `to_dot()`, and drawn as `state --> [*]` in `to_mermaid()`.
 
 ### Callbacks
 
@@ -296,13 +331,16 @@ print(sm.to_mermaid())
 
 | Function / Class | Description |
 |------------------|-------------|
-| `StateMachine(states, initial, transitions)` | Create a state machine with given states, initial state, and transitions |
+| `StateMachine(states, initial, transitions, final_states=None)` | Create a state machine with given states, initial state, transitions, and optional terminal states |
 | `StateMachine.state` | Current state (read-only property) |
+| `StateMachine.is_final` | Whether the current state is a final state (read-only property) |
+| `StateMachine.final_states` | Configured final states in declaration order (read-only property) |
 | `StateMachine.history` | List of past states (read-only property) |
 | `StateMachine.transition_history` | List of `TransitionRecord` objects with timestamps (read-only property) |
-| `StateMachine.trigger(event, context=None)` | Execute a transition or raise `InvalidTransitionError`. Pass optional context dict to guards. |
+| `StateMachine.trigger(event, context=None)` | Execute a transition or raise `InvalidTransitionError` (also raised from a final state). Pass optional context dict to guards. |
 | `StateMachine.can(event)` | Return whether the event is valid from the current state |
 | `StateMachine.available_events()` | List of events (deduped) that can fire from the current state, including wildcards |
+| `StateMachine.transitions_from(state=None)` | List of `(event, to_state)` pairs that can fire from a state (defaults to current), including wildcards |
 | `StateMachine.add_transition(from_state, to_state, event, guard=None)` | Add a transition with an optional guard callable. Use `"*"` as from_state for wildcard. |
 | `StateMachine.on_enter(state, callback)` | Register a callback for entering a state |
 | `StateMachine.on_exit(state, callback)` | Register a callback for exiting a state |
@@ -310,7 +348,7 @@ print(sm.to_mermaid())
 | `StateMachine.remove_transition_listener(callback)` | Remove a previously registered transition listener. Returns `True` if removed. |
 | `StateMachine.reset()` | Reset to initial state and clear history |
 | `StateMachine.add_timeout(state, target, seconds)` | Define an automatic transition after *seconds* in *state* |
-| `StateMachine.snapshot()` | Return a serializable dict of current state and history |
+| `StateMachine.snapshot()` | Return a serializable dict of current state and history (plus `final_states` when configured) |
 | `StateMachine.restore(snapshot)` | Restore the machine from a snapshot dict |
 | `StateMachine.to_dot()` | Return a DOT/Graphviz string of the state machine |
 | `StateMachine.to_mermaid()` | Return a Mermaid state diagram string |

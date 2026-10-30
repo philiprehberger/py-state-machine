@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 (2026-10-30)
+
+- Add `final_states` parameter to `StateMachine` for terminal states with no outgoing transitions
+- Add `is_final` and `final_states` properties
+- `trigger()` raises `InvalidTransitionError` from a final state, including for wildcard transitions
+- Reject transitions and timeouts defined from a final state with `ValueError`
+- Include final states in `snapshot()`, validate them in `restore()`, and mark them in `to_dot()` and `to_mermaid()`
+- Add `transitions_from(state=None)` returning `(event, to_state)` pairs that can fire from a state, including wildcards
+
 ## 0.6.0 (2026-06-15)
 
 - Add `available_events()` returning the deduped list of events that can fire from the current state (including wildcard transitions)

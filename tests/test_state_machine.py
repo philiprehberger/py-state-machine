@@ -699,3 +699,221 @@ class TestAvailableEvents:
             transitions=[("a", "b", "go")],
         )
         assert sm.available_events() == []
+
+
+def _make_final_machine() -> StateMachine:
+    """Create an order-flow machine with terminal states."""
+    return StateMachine(
+        states=["pending", "confirmed", "delivered", "cancelled", "error"],
+        initial="pending",
+        transitions=[
+            ("pending", "confirmed", "confirm"),
+            ("confirmed", "delivered", "deliver"),
+            ("pending", "cancelled", "cancel"),
+            ("*", "error", "fail"),
+        ],
+        final_states=["delivered", "cancelled"],
+    )
+
+
+class TestFinalStates:
+    def test_is_final_false_initially(self) -> None:
+        sm = _make_final_machine()
+        assert sm.is_final is False
+
+    def test_is_final_after_reaching_final_state(self) -> None:
+        sm = _make_final_machine()
+        sm.trigger("confirm")
+        sm.trigger("deliver")
+        assert sm.is_final is True
+
+    def test_final_states_property(self) -> None:
+        sm = _make_final_machine()
+        assert sm.final_states == ["delivered", "cancelled"]
+
+    def test_final_states_default_empty(self) -> None:
+        sm = _make_order_machine()
+        assert sm.final_states == []
+        assert sm.is_final is False
+
+    def test_trigger_from_final_raises(self) -> None:
+        sm = _make_final_machine()
+        sm.trigger("cancel")
+        with pytest.raises(InvalidTransitionError) as exc_info:
+            sm.trigger("confirm")
+        assert exc_info.value.state == "cancelled"
+        assert exc_info.value.event == "confirm"
+
+    def test_wildcard_does_not_fire_from_final(self) -> None:
+        sm = _make_final_machine()
+        sm.trigger("cancel")
+        with pytest.raises(InvalidTransitionError):
+            sm.trigger("fail")
+        assert sm.state == "cancelled"
+
+    def test_wildcard_still_fires_from_non_final(self) -> None:
+        sm = _make_final_machine()
+        sm.trigger("fail")
+        assert sm.state == "error"
+
+    def test_can_and_available_events_empty_in_final(self) -> None:
+        sm = _make_final_machine()
+        sm.trigger("cancel")
+        assert sm.can("fail") is False
+        assert sm.available_events() == []
+
+    def test_unknown_final_state_raises(self) -> None:
+        with pytest.raises(ValueError, match="not in states"):
+            StateMachine(
+                states=["a", "b"],
+                initial="a",
+                transitions=[("a", "b", "go")],
+                final_states=["nonexistent"],
+            )
+
+    def test_constructor_transition_from_final_raises(self) -> None:
+        with pytest.raises(ValueError, match="final state"):
+            StateMachine(
+                states=["a", "b"],
+                initial="a",
+                transitions=[("a", "b", "go"), ("b", "a", "back")],
+                final_states=["b"],
+            )
+
+    def test_add_transition_from_final_raises(self) -> None:
+        sm = _make_final_machine()
+        with pytest.raises(ValueError, match="final state"):
+            sm.add_transition("delivered", "pending", "reopen")
+
+    def test_add_transition_into_final_allowed(self) -> None:
+        sm = _make_final_machine()
+        sm.add_transition("confirmed", "cancelled", "cancel")
+        sm.trigger("confirm")
+        sm.trigger("cancel")
+        assert sm.is_final is True
+
+    def test_add_timeout_on_final_raises(self) -> None:
+        sm = _make_final_machine()
+        with pytest.raises(ValueError, match="final state"):
+            sm.add_timeout("delivered", "pending", seconds=0.05)
+
+    def test_timeout_into_final_state(self) -> None:
+        sm = _make_final_machine()
+        sm.add_timeout("pending", "cancelled", seconds=0.05)
+        time.sleep(0.2)
+        assert sm.state == "cancelled"
+        assert sm.is_final is True
+
+    def test_initial_state_can_be_final(self) -> None:
+        sm = StateMachine(
+            states=["done"], initial="done", transitions=[], final_states=["done"]
+        )
+        assert sm.is_final is True
+
+    def test_reset_leaves_final_state(self) -> None:
+        sm = _make_final_machine()
+        sm.trigger("cancel")
+        sm.reset()
+        assert sm.state == "pending"
+        assert sm.is_final is False
+
+    def test_snapshot_includes_final_states(self) -> None:
+        sm = _make_final_machine()
+        sm.trigger("cancel")
+        snap = sm.snapshot()
+        assert snap == {
+            "state": "cancelled",
+            "history": ["pending"],
+            "final_states": ["delivered", "cancelled"],
+        }
+
+    def test_restore_round_trip_with_final_states(self) -> None:
+        sm = _make_final_machine()
+        sm.trigger("cancel")
+        snap = sm.snapshot()
+        sm.reset()
+        sm.restore(snap)
+        assert sm.state == "cancelled"
+        assert sm.is_final is True
+
+    def test_restore_mismatched_final_states_raises(self) -> None:
+        sm = _make_final_machine()
+        with pytest.raises(ValueError, match="do not match"):
+            sm.restore(
+                {"state": "pending", "history": [], "final_states": ["delivered"]}
+            )
+
+    def test_restore_unknown_final_state_raises(self) -> None:
+        sm = _make_final_machine()
+        with pytest.raises(ValueError, match="not in states"):
+            sm.restore(
+                {"state": "pending", "history": [], "final_states": ["nonexistent"]}
+            )
+
+    def test_restore_without_final_states_key(self) -> None:
+        sm = _make_final_machine()
+        sm.restore({"state": "confirmed", "history": ["pending"]})
+        assert sm.state == "confirmed"
+
+    def test_to_dot_marks_final_states(self) -> None:
+        sm = _make_final_machine()
+        dot = sm.to_dot()
+        assert '"delivered" [shape=circle, style=filled, fillcolor=lightgray]' in dot
+        assert '"pending" [shape=doublecircle]' in dot
+        # Wildcard edges are not drawn from final states
+        assert '"delivered" -> "error"' not in dot
+        assert '"pending" -> "error" [label="fail"]' in dot
+
+    def test_to_mermaid_marks_final_states(self) -> None:
+        sm = _make_final_machine()
+        mermaid = sm.to_mermaid()
+        assert "delivered --> [*]" in mermaid
+        assert "cancelled --> [*]" in mermaid
+        assert "delivered --> error" not in mermaid
+        assert "pending --> error : fail" in mermaid
+
+
+class TestTransitionsFrom:
+    def test_defaults_to_current_state(self) -> None:
+        sm = _make_order_machine()
+        assert sm.transitions_from() == [
+            ("confirm", "confirmed"),
+            ("cancel", "cancelled"),
+        ]
+
+    def test_explicit_state(self) -> None:
+        sm = _make_order_machine()
+        assert sm.transitions_from("confirmed") == [
+            ("ship", "shipped"),
+            ("cancel", "cancelled"),
+        ]
+
+    def test_includes_wildcards_after_exact(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "err"],
+            initial="a",
+            transitions=[("*", "err", "fail"), ("a", "b", "go")],
+        )
+        assert sm.transitions_from() == [("go", "b"), ("fail", "err")]
+
+    def test_exact_match_shadows_wildcard_event(self) -> None:
+        sm = StateMachine(
+            states=["a", "b", "c"],
+            initial="a",
+            transitions=[("a", "b", "go"), ("*", "c", "go")],
+        )
+        assert sm.transitions_from() == [("go", "b")]
+        assert sm.transitions_from("b") == [("go", "c")]
+
+    def test_empty_when_no_outgoing(self) -> None:
+        sm = _make_order_machine()
+        assert sm.transitions_from("delivered") == []
+
+    def test_empty_for_final_state(self) -> None:
+        sm = _make_final_machine()
+        assert sm.transitions_from("cancelled") == []
+
+    def test_unknown_state_raises(self) -> None:
+        sm = _make_order_machine()
+        with pytest.raises(ValueError, match="not in states"):
+            sm.transitions_from("nonexistent")
